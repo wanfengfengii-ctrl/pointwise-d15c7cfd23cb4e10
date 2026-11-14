@@ -1,17 +1,22 @@
 {
   "version": 1,
   "kind": "cli",
-  "setup": [],
+  "setup": [
+    "python3",
+    "-B",
+    "lab.py",
+    "setup"
+  ],
   "verify": [
     "python3",
     "-B",
-    "checks.py",
+    "lab.py",
     "verify"
   ],
   "demo": [
     "python3",
     "-B",
-    "checks.py",
-    "source"
+    "lab.py",
+    "demo"
   ]
 }

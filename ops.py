@@ -13,7 +13,8 @@ import zipfile
 import runtime
 import collector
 
-CODE = ("pipeline.py", "runtime.py", "ops.py", "checks.py", "lab.py", "collector.py", "portal.py")
+CODE = ("pipeline.py", "runtime.py", "ops.py", "checks.py", "lab.py", "collector.py",
+        "portal.py", "agent.py")
 MAIN = "from ops import main\nmain()\n"
 
 
@@ -63,13 +64,32 @@ def install(release, root, control):
         raise ValueError("INSTALL_TARGET_NOT_EMPTY")
     runtime.init(root, control)
     collector.init(root)
+    digest = hashlib.sha256(app).hexdigest()
     (root / "app.pyz").write_bytes(app)
-    return {"root": str(root), "sha256": hashlib.sha256(app).hexdigest()}
+    (root / "installed.json").write_bytes(runtime.encode(
+        {"format": 1, "app_sha256": digest, "identity": identity(root)}))
+    return {"root": str(root), "sha256": digest}
+
+
+def version(root):
+    root = Path(root).resolve()
+    installed = json.loads((root / "installed.json").read_bytes())
+    app = (root / "app.pyz").read_bytes()
+    if hashlib.sha256(app).hexdigest() != installed["app_sha256"]:
+        raise ValueError("INSTALL_CORRUPT")
+    return {"app_sha256": installed["app_sha256"], "format": installed["format"],
+            "identity": installed["identity"], "control": json.loads(
+                (root / "config.json").read_bytes())["control"]}
 
 
 def start(root):
     root = Path(root).resolve()
     control = Path(json.loads((root / "config.json").read_bytes())["control"])
+    if sys.platform != "darwin":
+        import agent
+        if agent.running(root):
+            return {"label": identity(root), "pid": agent.pid(root), "already": True}
+        return {"label": identity(root), "pid": agent.spawn(root)}
     config = {
         "Label": identity(root),
         "ProgramArguments": [str(Path(sys.executable).resolve()), str(root / "app.pyz"),
@@ -94,6 +114,11 @@ def start(root):
 
 
 def stop(root):
+    root = Path(root).resolve()
+    if sys.platform != "darwin":
+        import agent
+        agent.halt(root)
+        return {"stopped": identity(root)}
     target = "gui/" + str(os.getuid()) + "/" + identity(root)
     subprocess.run(["launchctl", "bootout", target], capture_output=True)
     agent_path(root).unlink(missing_ok=True)
@@ -109,7 +134,7 @@ def main(argv=None):
     install_parser.add_argument("release")
     install_parser.add_argument("root")
     install_parser.add_argument("--control", required=True)
-    for name in ("start", "stop", "status", "downloads", "run", "worker"):
+    for name in ("start", "stop", "status", "downloads", "run", "worker", "version"):
         subs.add_parser(name).add_argument("root")
     for name, argument in (("submit", "input"), ("read", "batch_id")):
         item = subs.add_parser(name)
@@ -133,6 +158,8 @@ def main(argv=None):
         value = stop(args.root)
     elif args.operation == "status":
         value = runtime.status(args.root)
+    elif args.operation == "version":
+        value = version(args.root)
     elif args.operation == "downloads":
         value = collector.status(args.root)
     elif args.operation == "enqueue":
@@ -154,7 +181,6 @@ def main(argv=None):
         import checks
         value = {"business": checks.normal(), "source": checks.source()}
     print(json.dumps(value, ensure_ascii=False, sort_keys=True))
-
 
 if __name__ == "__main__":
     main()

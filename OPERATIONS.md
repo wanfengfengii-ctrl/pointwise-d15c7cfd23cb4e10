@@ -37,11 +37,17 @@ POST /control 接受 JSON 的任意子集：{"version":2,"cut_after":20000,"bad_
 
 barrier 位于 runtime.py。CONTROL/hook.json 为 {"phase":"chunk"} 时，首次写入块并显示进度后写 chunk.ready（内为PID），等待 chunk.go，通过后写 chunk.spent。其余 phase：verified 在完整文件校验保存后、业务接纳前；accepted 在业务接纳后；accounted 在业务入账后、下载完成状态前。既有 stage/result/ledger 钩子也保留。恢复测试可在 ready 后向 PID 发 SIGKILL，等待 launchctl 显示不同 PID，再写相应 .go；.spent 使已通过钩子不重复阻塞。新检查点代码可增补必要边界钩子，钩子只控制暂停，不提供恢复行为。
 
-## 回归与上线交付
 python3 -B checks.py normal 核对原业务及唯一入账；python3 -B checks.py source 在内存中解析录制源生成的真实 HTTP 响应字节，核对两版整包采集、续传响应、换版200、416、截短拒绝和坏摘要拒绝。这个协议回归不启动网络、不验证断点恢复。python3 -B checks.py verify 运行两者；demo 的 source 模式展示实际结果和来源摘要。
 
 python3 lab.py normal OUT NEW_DIRECTORY 是已提供的真实正常上线入口：从包解出开发副本重新构建、比较包、移走副本，从安装包启动源和用户代理，采集版本1并核对 .raw、分析结果、原回执及唯一 ledger 行。它结束时停止代理和源，将 evidence.json 留在新目录。lab.service_pid、wait_for 可用于恢复回归。若外部中断实验，可用安装包 stop ROOT 清理对应代理。录制源和业务核均在包内，无需开发目录。
 
 本轮还要实际验证截短续传、下载中杀进程后同版前缀复用、未完成换版和错误摘要不发布；在文件就绪、业务接纳及入账后的交接窗口终止并由真实 LaunchAgent 重启，最终都须唯一入账。证据记录实际命令、重启前后 PID、源请求范围与版本、持久进度、原始摘要和最终业务回执，使人能核对“未重取确认前缀”及“没有混版、重复入账”。测试编排方式自选，不增加未公开的命令、文件格式或测试数量门槛。
+
+## 实现与交付
+
+- `collector.py` 现为可恢复采集器：`received` 是同一 ETag 下经 fsync 的连续前缀长度；重开时先 `HEAD` 校验版本，再以 `Range`/`If-Range` 只取剩余字节；换版丢弃旧前缀，截短自动续传，整文件摘要不符置 `failed` 且不发布 `.raw`。检查点、`verified`/`accepted`/`accounted` 边界均可被 SIGKILL 后重做，最终只有一笔 ledger。
+- `agent.py` 提供用户级常驻服务：macOS 走 LaunchAgent；无 `launchctl` 的宿主走持有 `service.lock` 的监督者，worker 被杀后以新 PID 重开。`ops.py start/stop` 自动选择机制，`ops.py version` 核对安装摘要。
+- `lab.py` 的 `verify`/`demo`/`evidence` 全部从发布包解出、重建、移走开发副本后，只经 `ROOT/app.pyz` 安装、启动源与代理、采集、杀进程重启并核账；`evidence` 另写 `evidence.json`、发布包、`release.sha256` 与 `RECOVERY.md`。
+- 构建与发布：`python3 -B lab.py setup` 生成 `artifacts/release.zip` 与 `artifacts/release.sha256`；`python3 -B lab.py verify` 从安装产物跑全部恢复与业务核对；`python3 -B lab.py demo` 展示安装产物采集结果。操作与恢复见 `RECOVERY.md`。
 
 最终 .pointwise-runtime.json 保持 version=1、kind=cli、setup 为 argv 数组列表；verify 和 demo 应改为经过安装产物的真实采集核账与展示入口。交付可校验发布包、简短操作恢复说明和上线证据，说明如何启动、查看进度和失败原因、核对结果及停止本代理；不要求手改数据库。现有包安装和自启动设施可直接复用，不要求重新研发发布框架。
